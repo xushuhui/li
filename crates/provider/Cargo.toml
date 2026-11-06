@@ -1,0 +1,13 @@
+[package]
+name = "baize-provider"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+baize-core = { path = "../core" }
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

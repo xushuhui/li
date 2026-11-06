@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use baize_core::Usage;
+use li_core::Usage;
 use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};

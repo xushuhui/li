@@ -1,4 +1,4 @@
-# baize
+# li
 
 High-performance AI coding agent CLI, written in Rust. Design decisions live in `specs/design.md`; deferred work lives in `specs/v2.md`.
 

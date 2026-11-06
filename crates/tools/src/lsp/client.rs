@@ -320,9 +320,9 @@ mod tests {
 
     #[test]
     fn uri_round_trips_plain_paths() {
-        let path = Path::new("/tmp/baize/main.go");
+        let path = Path::new("/tmp/li/main.go");
         let uri = to_uri(path);
-        assert_eq!(uri, "file:///tmp/baize/main.go");
+        assert_eq!(uri, "file:///tmp/li/main.go");
         assert_eq!(from_uri(&uri).as_deref(), Some(path));
     }
 

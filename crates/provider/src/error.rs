@@ -25,7 +25,7 @@ impl ProviderError {
     pub fn user_message(&self) -> String {
         match self {
             ProviderError::Http { status: 401, .. } => {
-                "鉴权失败（401）。检查 BAIZE_API_KEY 环境变量是否设置且有效。".to_string()
+                "鉴权失败（401）。检查 LI_API_KEY 环境变量是否设置且有效。".to_string()
             }
             ProviderError::Http { status, body } => {
                 format!("模型网关返回 {status}：{}", body.trim())

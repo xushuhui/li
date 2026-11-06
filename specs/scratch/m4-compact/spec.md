@@ -8,7 +8,7 @@
 
 每次请求模型前估算当前上下文的 token 数。超过 `context_window × compact_at_percent / 100` 就压缩一次。
 
-配置来自 `~/.config/baize/config.toml`：
+配置来自 `~/.config/li/config.toml`：
 
 ```toml
 [model]

@@ -5,6 +5,7 @@ pub mod entry;
 pub mod message;
 pub mod prompt;
 pub mod session;
+pub mod skills;
 
 pub use entry::{Entry, EntryId};
 pub use message::{Content, Message, Role, Usage};

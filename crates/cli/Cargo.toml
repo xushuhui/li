@@ -1,17 +1,17 @@
 [package]
-name = "baize-cli"
+name = "li-cli"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "baize"
+name = "li"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
-baize-core = { path = "../core" }
-baize-provider = { path = "../provider" }
-baize-tools = { path = "../tools" }
+li-core = { path = "../core" }
+li-provider = { path = "../provider" }
+li-tools = { path = "../tools" }
 clap.workspace = true
 crossterm = "0.29.0"
 futures.workspace = true

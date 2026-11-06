@@ -5,11 +5,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use baize_core::encode_dir;
+use li_core::encode_dir;
 use support::{reply, request_body, setup, sse_body};
 
 fn set_window(home: &Path, window: u32, percent: u8) {
-    let path = home.join(".config/baize/config.toml");
+    let path = home.join(".config/li/config.toml");
     let text = fs::read_to_string(&path).expect("config");
 
     let mut out: Vec<String> = Vec::new();
@@ -38,21 +38,21 @@ fn set_window(home: &Path, window: u32, percent: u8) {
 
 fn sessions_dir(home: &Path, cwd: &Path) -> PathBuf {
     let canonical = fs::canonicalize(cwd).expect("canonical cwd");
-    home.join(".baize/sessions")
+    home.join(".li/sessions")
         .join(encode_dir(&canonical.to_string_lossy()))
 }
 
 fn repl(home: &Path, cwd: &Path, lines: &[&str]) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_baize"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_li"))
         .current_dir(cwd)
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
-        .env_remove("BAIZE_API_KEY")
+        .env_remove("LI_API_KEY")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn baize");
+        .expect("spawn li");
 
     {
         let stdin = child.stdin.as_mut().expect("stdin");
@@ -149,15 +149,15 @@ fn short_conversation_does_not_compact() {
 }
 
 fn run_cli(home: &Path, cwd: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_baize"))
+    Command::new(env!("CARGO_BIN_EXE_li"))
         .args(args)
         .current_dir(cwd)
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
-        .env_remove("BAIZE_API_KEY")
+        .env_remove("LI_API_KEY")
         .stdin(Stdio::null())
         .output()
-        .expect("run baize")
+        .expect("run li")
 }
 
 #[test]

@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use baize_tools::lsp::{DefinitionTool, DiagnosticsTool, ReferencesTool};
-use baize_tools::{AllowAll, SnapshotStore, Tool, ToolContext};
+use li_tools::lsp::{DefinitionTool, DiagnosticsTool, ReferencesTool};
+use li_tools::{AllowAll, SnapshotStore, Tool, ToolContext};
 use serde_json::json;
 
 fn context(dir: &Path) -> ToolContext {

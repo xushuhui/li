@@ -8,9 +8,10 @@ use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 
 use anyhow::Result;
-use baize_core::Session;
-use baize_provider::OpenAiProvider;
-use baize_tools::{Approver, Tool, ToolContext};
+use li_core::Session;
+use li_core::skills::Skill;
+use li_provider::OpenAiProvider;
+use li_tools::{Approver, Tool, ToolContext};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -24,6 +25,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use tokio::sync::mpsc;
 
+use crate::slash::{self, Action};
 use crate::ui::Ui;
 use crate::{Budget, Settings, turn};
 
@@ -35,6 +37,7 @@ pub struct Launch {
     pub model: String,
     pub budget: Budget,
     pub tools: Vec<Box<dyn Tool>>,
+    pub skills: Vec<Skill>,
     pub context: ToolContext,
     pub ui: TuiUi,
     pub events: mpsc::UnboundedReceiver<UiEvent>,
@@ -125,6 +128,7 @@ struct App {
     input: String,
     status: String,
     pending: Option<(String, std_mpsc::Sender<bool>)>,
+    skills: Vec<Skill>,
 }
 
 impl App {
@@ -174,13 +178,29 @@ impl App {
                 if text == "exit" || text == "quit" {
                     return true;
                 }
-                if !text.is_empty() {
-                    self.push(Kind::User, &format!("> {text}"));
-                    let _ = input.send(text);
+                if text.is_empty() {
+                    return false;
+                }
+                match slash::dispatch(&text, &self.skills) {
+                    Action::Exit => return true,
+                    Action::Print(output) => {
+                        for line in output.lines() {
+                            self.push(Kind::Tool, line);
+                        }
+                    }
+                    Action::Send(message) => {
+                        self.push(Kind::User, &format!("> {text}"));
+                        let _ = input.send(message);
+                    }
                 }
             }
             KeyCode::Backspace => {
                 self.input.pop();
+            }
+            KeyCode::Tab => {
+                if let Some(first) = slash::completions(&self.input, &self.skills).first() {
+                    self.input = first.clone();
+                }
             }
             KeyCode::Char(ch) => self.input.push(ch),
             _ => {}
@@ -214,6 +234,7 @@ async fn serve(
         model,
         budget,
         tools,
+        skills,
         context,
         ui,
         mut events,
@@ -258,7 +279,10 @@ async fn serve(
         }
     });
 
-    let mut app = App::default();
+    let mut app = App {
+        skills,
+        ..App::default()
+    };
     loop {
         terminal.draw(|frame| draw(frame, &app))?;
 
@@ -324,7 +348,7 @@ fn draw(frame: &mut ratatui::Frame, app: &App) {
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     let offset = total.saturating_sub(inner_height) as u16;
     let paragraph = paragraph
-        .block(Block::default().borders(Borders::ALL).title(" baize "))
+        .block(Block::default().borders(Borders::ALL).title(" li "))
         .scroll((offset, 0));
     frame.render_widget(paragraph, body);
 
@@ -334,11 +358,38 @@ fn draw(frame: &mut ratatui::Frame, app: &App) {
     let cursor = input_area.x + 1 + app.input.chars().count() as u16;
     frame.set_cursor_position((cursor.min(input_area.right().saturating_sub(2)), input_area.y + 1));
 
-    let status = match &app.pending {
-        Some((command, _)) => format!("确认执行？ {command}  [y/N]"),
-        None => app.status.clone(),
+    let completions = slash::completions(&app.input, &app.skills);
+    let bar_paragraph = match &app.pending {
+        Some((command, _)) => Paragraph::new(format!("确认执行？ {command}  [y/N]")),
+        None if !completions.is_empty() => Paragraph::new(hint_line(&completions)),
+        None => Paragraph::new(app.status.clone()),
     };
-    frame.render_widget(Paragraph::new(status), bar);
+    frame.render_widget(bar_paragraph, bar);
+}
+
+/// Hint line: the first candidate is selected, so Tab fills it in.
+fn hint_line(completions: &[String]) -> Line<'static> {
+    let dim = Style::default().fg(Color::DarkGray);
+    let mut spans = Vec::new();
+    for (index, name) in completions.iter().take(slash::MAX_HINTS).enumerate() {
+        if index > 0 {
+            spans.push(Span::raw("  "));
+        }
+        let style = if index == 0 {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            dim
+        };
+        spans.push(Span::styled(name.clone(), style));
+    }
+    if completions.len() > slash::MAX_HINTS {
+        spans.push(Span::styled(
+            format!("  …共 {} 项", completions.len()),
+            dim,
+        ));
+    }
+    spans.push(Span::styled("  Tab 补全", dim));
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -375,6 +426,41 @@ mod tests {
         assert!(screen.contains("答复内容"), "{screen}");
         assert!(screen.contains("下一个问题"), "{screen}");
         assert!(screen.contains("就绪"), "{screen}");
+    }
+
+    fn demo_skill() -> Skill {
+        Skill {
+            name: "tdd".to_string(),
+            description: String::new(),
+            path: "/skills/tdd/SKILL.md".into(),
+        }
+    }
+
+    #[test]
+    fn slash_input_shows_completion_hints() {
+        let app = App {
+            skills: vec![demo_skill()],
+            input: "/s".to_string(),
+            ..App::default()
+        };
+
+        let screen = render(&app);
+        assert!(screen.contains("/skill:tdd"), "{screen}");
+        assert!(screen.contains("Tab补全"), "{screen}");
+    }
+
+    #[test]
+    fn tab_fills_the_first_completion() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut app = App {
+            skills: vec![demo_skill()],
+            input: "/he".to_string(),
+            ..App::default()
+        };
+
+        let quit = app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &tx);
+        assert!(!quit);
+        assert_eq!(app.input, "/help");
     }
 
     #[test]

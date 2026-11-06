@@ -160,7 +160,7 @@ fn parallel_reads_all_return_in_one_round() {
 #[test]
 fn read_then_edit_closes_the_loop() {
     let original = "one\ntwo\nthree\n";
-    let tag = baize_tools::tag_of(original);
+    let tag = li_tools::tag_of(original);
     let patch = format!("[a.txt#{tag}]\nPUT 2.=2:\n+TWO\n");
     let edit_args = serde_json::json!({ "input": patch }).to_string();
 
@@ -214,7 +214,7 @@ fn auto_approval_runs_without_prompt() {
     ]);
     let (home, cwd) = setup(server.port);
     fs::write(
-        home.path().join(".config/baize/config.toml"),
+        home.path().join(".config/li/config.toml"),
         format!(
             "[model]\ndefault = \"test-model\"\nbase_url = \"http://127.0.0.1:{}/v1\"\ncontext_window = 200000\n\n[tools]\nbash_approval = \"auto\"\n",
             server.port
@@ -229,7 +229,7 @@ fn auto_approval_runs_without_prompt() {
 
 fn set_approval(home: &Path, port: u16, mode: &str) {
     fs::write(
-        home.join(".config/baize/config.toml"),
+        home.join(".config/li/config.toml"),
         format!(
             "[model]\ndefault = \"test-model\"\nbase_url = \"http://127.0.0.1:{port}/v1\"\ncontext_window = 200000\n\n[tools]\nbash_approval = \"{mode}\"\n"
         ),

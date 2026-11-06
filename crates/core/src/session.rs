@@ -324,7 +324,7 @@ fn acquire_lock(path: &Path) -> Result<File> {
         .with_context(|| format!("无法创建锁文件 {}", lock_path.display()))?;
     lock.try_lock_exclusive().with_context(|| {
         format!(
-            "会话正被另一个 baize 进程使用：{}",
+            "会话正被另一个 li 进程使用：{}",
             path.display()
         )
     })?;
@@ -350,7 +350,7 @@ pub fn short_id() -> String {
 }
 
 pub fn sessions_root(home: &Path) -> PathBuf {
-    home.join(".baize").join("sessions")
+    home.join(".li").join("sessions")
 }
 
 #[cfg(test)]
@@ -485,7 +485,7 @@ mod tests {
             Ok(_) => panic!("second load should fail"),
             Err(error) => format!("{error:#}"),
         };
-        assert!(error.contains("另一个 baize"), "error: {error}");
+        assert!(error.contains("另一个 li"), "error: {error}");
     }
 
     #[test]

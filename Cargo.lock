@@ -124,66 +124,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
-name = "baize-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "baize-core",
- "baize-provider",
- "baize-tools",
- "clap",
- "crossterm",
- "futures",
- "ratatui",
- "serde",
- "serde_json",
- "tempfile",
- "time",
- "tokio",
- "toml",
-]
-
-[[package]]
-name = "baize-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "fs2",
- "serde",
- "serde_json",
- "tempfile",
- "time",
-]
-
-[[package]]
-name = "baize-provider"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "baize-core",
- "futures",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "baize-tools"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "baize-core",
- "globset",
- "grep",
- "ignore",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1275,6 +1215,66 @@ name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
+
+[[package]]
+name = "li-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "futures",
+ "li-core",
+ "li-provider",
+ "li-tools",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "time",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "li-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fs2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "time",
+]
+
+[[package]]
+name = "li-provider"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "li-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "li-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "globset",
+ "grep",
+ "ignore",
+ "li-core",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "libc"

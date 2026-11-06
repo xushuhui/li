@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-const DEFAULT_CONFIG: &str = r#"# baize 配置。api_key 从环境变量 BAIZE_API_KEY 读取，不写进文件。
+const DEFAULT_CONFIG: &str = r#"# li 配置。api_key 从环境变量 LI_API_KEY 读取，不写进文件。
 [model]
 default = "workbuddy/deepseek-v4.1-flash"
 base_url = "http://127.0.0.1:3425/v1"
@@ -118,8 +118,8 @@ impl Config {
 
 pub fn config_dir(home: &Path) -> PathBuf {
     match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(value) if !value.is_empty() => PathBuf::from(value).join("baize"),
-        _ => home.join(".config").join("baize"),
+        Some(value) if !value.is_empty() => PathBuf::from(value).join("li"),
+        _ => home.join(".config").join("li"),
     }
 }
 

@@ -1,11 +1,11 @@
 [package]
-name = "baize-provider"
+name = "li-provider"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-baize-core = { path = "../core" }
+li-core = { path = "../core" }
 futures.workspace = true
 reqwest.workspace = true
 serde.workspace = true

@@ -9,7 +9,7 @@ use support::{sse_body, FakeServer, Reply};
 
 fn setup(port: u16) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("temp dir");
-    let config = dir.path().join(".config/baize");
+    let config = dir.path().join(".config/li");
     fs::create_dir_all(&config).expect("config dir");
     fs::write(config.join("config.toml"), config_text(port)).expect("config file");
     dir
@@ -22,18 +22,18 @@ fn config_text(port: u16) -> String {
 }
 
 fn run(home: &Path, cwd: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_baize"))
+    Command::new(env!("CARGO_BIN_EXE_li"))
         .args(args)
         .current_dir(cwd)
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
-        .env_remove("BAIZE_API_KEY")
+        .env_remove("LI_API_KEY")
         .output()
-        .expect("run baize")
+        .expect("run li")
 }
 
 fn session_file(home: &Path) -> PathBuf {
-    let root = home.join(".baize/sessions");
+    let root = home.join(".li/sessions");
     let mut dirs: Vec<PathBuf> = fs::read_dir(&root)
         .expect("sessions dir")
         .map(|entry| entry.expect("entry").path())
@@ -95,7 +95,7 @@ fn system_prompt_includes_global_and_project_rules() {
         chunk: 0,
     }]);
     let home = setup(server.port);
-    fs::write(home.path().join(".config/baize/AGENTS.md"), "GLOBAL-RULE").expect("global rules");
+    fs::write(home.path().join(".config/li/AGENTS.md"), "GLOBAL-RULE").expect("global rules");
 
     let project = home.path().join("project");
     fs::create_dir_all(&project).expect("project dir");
@@ -133,9 +133,118 @@ fn finds_project_rules_from_nested_directory() {
 }
 
 #[test]
+fn system_prompt_lists_project_skills() {
+    let server = support::start(vec![Reply::Sse {
+        body: sse_body(&["ok"], None),
+        chunk: 0,
+    }]);
+    let home = setup(server.port);
+
+    let project = home.path().join("project");
+    let skill = project.join(".agents/skills/review");
+    fs::create_dir_all(&skill).expect("skill dir");
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: review\ndescription: REVIEW-DESC\n---\n\nbody\n",
+    )
+    .expect("skill file");
+
+    let output = run(home.path(), &project, &["hi"]);
+    assert!(output.status.success());
+
+    let body = request_body(&server, 0);
+    let system = body["messages"][0]["content"].as_str().expect("system text");
+    assert!(system.contains("review"));
+    assert!(system.contains("REVIEW-DESC"));
+    assert!(system.contains("SKILL.md"));
+}
+
+#[test]
+fn system_prompt_names_the_active_model() {
+    let server = support::start(vec![Reply::Sse {
+        body: sse_body(&["ok"], None),
+        chunk: 0,
+    }]);
+    let home = setup(server.port);
+
+    let project = home.path().join("project");
+    fs::create_dir_all(&project).expect("project dir");
+
+    let output = run(home.path(), &project, &["--model", "chosen-model", "hi"]);
+    assert!(output.status.success());
+
+    let body = request_body(&server, 0);
+    let system = body["messages"][0]["content"].as_str().expect("system text");
+    assert!(system.contains("当前模型：chosen-model"));
+}
+
+#[test]
+fn help_command_prints_the_list_without_calling_the_model() {
+    let server = support::start(vec![]);
+    let home = setup(server.port);
+    let project = home.path().join("project");
+    fs::create_dir_all(&project).expect("project dir");
+
+    let output = run_with_input(home.path(), &project, "/help\n");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("/skill:<名字>"), "{stdout}");
+    assert!(server.requests.lock().expect("requests").is_empty());
+}
+
+#[test]
+fn skill_command_sends_the_body_without_frontmatter() {
+    let server = support::start(vec![Reply::Sse {
+        body: sse_body(&["ok"], None),
+        chunk: 0,
+    }]);
+    let home = setup(server.port);
+    let project = home.path().join("project");
+    fs::create_dir_all(&project).expect("project dir");
+
+    let skills = home.path().join(".agents/skills/demo");
+    fs::create_dir_all(&skills).expect("skill dir");
+    fs::write(
+        skills.join("SKILL.md"),
+        "---\nname: demo\ndescription: DEMO\n---\n\nSKILL-BODY\n",
+    )
+    .expect("skill file");
+
+    let output = run_with_input(home.path(), &project, "/skill:demo\n");
+    assert!(output.status.success());
+
+    let body = request_body(&server, 0);
+    let messages = body["messages"].as_array().expect("messages");
+    let last = messages.last().expect("a message")["content"]
+        .as_str()
+        .expect("text");
+    assert!(last.contains("SKILL-BODY"), "{last}");
+    assert!(!last.contains("name: demo"));
+}
+
+fn run_with_input(home: &Path, cwd: &Path, input: &str) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_li"))
+        .current_dir(cwd)
+        .env("HOME", home)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("LI_API_KEY")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn li");
+    {
+        use std::io::Write;
+        let stdin = child.stdin.as_mut().expect("stdin");
+        stdin.write_all(input.as_bytes()).expect("write input");
+    }
+    child.wait_with_output().expect("wait")
+}
+
+#[test]
 fn missing_base_url_exits_2() {
     let home = tempfile::tempdir().expect("temp dir");
-    let config = home.path().join(".config/baize");
+    let config = home.path().join(".config/li");
     fs::create_dir_all(&config).expect("config dir");
     fs::write(
         config.join("config.toml"),
@@ -151,7 +260,7 @@ fn missing_base_url_exits_2() {
 #[test]
 fn zero_context_window_exits_2() {
     let home = tempfile::tempdir().expect("temp dir");
-    let config = home.path().join(".config/baize");
+    let config = home.path().join(".config/li");
     fs::create_dir_all(&config).expect("config dir");
     fs::write(
         config.join("config.toml"),
@@ -174,7 +283,7 @@ fn unauthorized_exits_1_without_assistant_message() {
 
     let output = run(home.path(), home.path(), &["hi"]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("BAIZE_API_KEY"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("LI_API_KEY"));
 
     let lines = session_lines(home.path());
     assert_eq!(lines.len(), 2);
@@ -270,10 +379,10 @@ fn blank_prompt_sends_nothing() {
 
 #[test]
 fn version_matches_crate() {
-    let output = Command::new(env!("CARGO_BIN_EXE_baize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_li"))
         .arg("--version")
         .output()
-        .expect("run baize");
+        .expect("run li");
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains(env!("CARGO_PKG_VERSION")));
 }

@@ -1,21 +1,23 @@
 mod config;
+mod slash;
 mod tui;
 mod ui;
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use baize_core::prompt::build_system_prompt;
-use baize_core::{
+use li_core::prompt::{Prompt, build_system_prompt};
+use li_core::{
     compact, Content, Message, Role, Session, encode_dir, latest_summary, list_summaries,
-    sessions_root,
+    sessions_root, skills,
 };
-use baize_provider::{Delta, OpenAiProvider, ToolCall, WireMessage};
-use baize_tools::{Approver, SnapshotStore, Tool, ToolContext, ToolOutcome};
+use li_core::skills::Skill;
+use li_provider::{Delta, OpenAiProvider, ToolCall, WireMessage};
+use li_tools::{Approver, SnapshotStore, Tool, ToolContext, ToolOutcome};
 use clap::Parser;
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -24,7 +26,7 @@ use time::format_description::well_known::Rfc3339;
 const MAX_TOOL_ROUNDS: usize = 64;
 
 /// Room reserved for the system prompt and the tool definitions.
-const SYSTEM_AND_TOOLS_TOKENS: usize = 800;
+const SYSTEM_AND_TOOLS_TOKENS: usize = 1200;
 
 #[derive(Clone, Copy)]
 struct Budget {
@@ -41,7 +43,7 @@ struct Settings<'a> {
 }
 
 #[derive(Parser)]
-#[command(name = "baize", version, about = "终端里的编码助手")]
+#[command(name = "li", version, about = "终端里的编码助手")]
 struct Cli {
     /// 要发送给模型的问题；省略则进入交互模式
     prompt: Option<String>,
@@ -57,10 +59,6 @@ struct Cli {
     /// 从最近 10 个会话里选一个继续
     #[arg(long, conflicts_with = "continue_session")]
     resume: bool,
-
-    /// 全屏界面：上方对话记录，下方输入行
-    #[arg(long)]
-    tui: bool,
 }
 
 #[tokio::main]
@@ -101,7 +99,7 @@ async fn run() -> Result<ExitCode> {
         .model
         .clone()
         .unwrap_or_else(|| config.model.default.clone());
-    let api_key = std::env::var("BAIZE_API_KEY")
+    let api_key = std::env::var("LI_API_KEY")
         .ok()
         .filter(|value| !value.is_empty());
     let provider = OpenAiProvider::new(config.model.base_url.clone(), api_key)?;
@@ -115,7 +113,7 @@ async fn run() -> Result<ExitCode> {
     let session_dir = sessions_root(&home).join(encode_dir(&cwd_text));
     let mut session = if cli.continue_session {
         let Some(summary) = latest_summary(&session_dir)? else {
-            eprintln!("当前目录还没有会话，直接运行 `baize` 开一个新的。");
+            eprintln!("当前目录还没有会话，直接运行 `li` 开一个新的。");
             return Ok(ExitCode::from(1));
         };
         eprintln!("继续会话：{}", if summary.title.is_empty() { &summary.id } else { &summary.title });
@@ -144,16 +142,25 @@ async fn run() -> Result<ExitCode> {
             })
             .collect();
     let now = OffsetDateTime::now_utc().format(&Rfc3339)?;
-    let system = build_system_prompt(
-        &cwd_text,
-        &now,
-        global_rules.as_deref(),
-        &project_rules,
+    let discovered = skills::discover(&cwd, &home);
+    let system = build_system_prompt(Prompt {
+        cwd: &cwd_text,
+        now: &now,
+        model: &model,
+        global_rules: global_rules.as_deref(),
+        project_rules: &project_rules,
+        skills: &discovered,
+    });
+
+    let interactive = wants_tui(
+        cli.prompt.as_deref(),
+        std::io::stdin().is_terminal(),
+        std::io::stdout().is_terminal(),
     );
 
-    let tools = baize_tools::registry();
+    let tools = li_tools::registry();
     let (ui_tx, ui_rx) = tokio::sync::mpsc::unbounded_channel();
-    let inner: Arc<dyn Approver> = if cli.tui {
+    let inner: Arc<dyn Approver> = if interactive {
         Arc::new(tui::TuiApprover::new(ui_tx.clone()))
     } else {
         Arc::new(StdinApprover)
@@ -169,7 +176,7 @@ async fn run() -> Result<ExitCode> {
         lsp: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     };
 
-    if cli.tui {
+    if interactive {
         tui::run(tui::Launch {
             session,
             provider,
@@ -178,6 +185,7 @@ async fn run() -> Result<ExitCode> {
             budget,
             tools,
             context,
+            skills: discovered.clone(),
             ui: tui::TuiUi::new(ui_tx),
             events: ui_rx,
         })
@@ -220,6 +228,7 @@ async fn run() -> Result<ExitCode> {
         },
         &tools,
         &context,
+        &discovered,
     )
     .await?;
     Ok(ExitCode::SUCCESS)
@@ -231,6 +240,7 @@ async fn repl(
     settings: Settings<'_>,
     tools: &[Box<dyn Tool>],
     context: &ToolContext,
+    skills: &[Skill],
 ) -> Result<()> {
     let stdin = std::io::stdin();
     loop {
@@ -247,7 +257,13 @@ async fn repl(
         if text.is_empty() {
             continue;
         }
-        turn(session, provider, settings, tools, context, text).await?;
+        match slash::dispatch(text, skills) {
+            slash::Action::Exit => break,
+            slash::Action::Print(output) => println!("{output}"),
+            slash::Action::Send(message) => {
+                turn(session, provider, settings, tools, context, &message).await?;
+            }
+        }
     }
     Ok(())
 }
@@ -271,7 +287,7 @@ async fn turn(
         let history = build_history(session);
         let definitions: Vec<Value> = tools
             .iter()
-            .map(|tool| baize_tools::definition(tool.as_ref()))
+            .map(|tool| li_tools::definition(tool.as_ref()))
             .collect();
 
         let mut stream = provider.stream(
@@ -585,7 +601,7 @@ impl Approver for PolicyApprover {
         match self.mode {
             config::BashApproval::Auto => true,
             config::BashApproval::Danger => {
-                !baize_tools::bash::is_dangerous(command) || self.inner.approve(command)
+                !li_tools::bash::is_dangerous(command) || self.inner.approve(command)
             }
         }
     }
@@ -608,7 +624,7 @@ impl Approver for StdinApprover {
 fn choose_session(dir: &Path) -> Result<Option<PathBuf>> {
     let summaries = list_summaries(dir, 10)?;
     if summaries.is_empty() {
-        eprintln!("当前目录还没有会话，直接运行 `baize` 开一个新的。");
+        eprintln!("当前目录还没有会话，直接运行 `li` 开一个新的。");
         return Ok(None);
     }
 
@@ -660,4 +676,23 @@ fn home_dir() -> Result<PathBuf> {
 
 fn read_optional(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok()
+}
+
+/// Interactive full-screen mode needs both ends to be a terminal: keys come
+/// from stdin, rendering goes to stdout.
+fn wants_tui(prompt: Option<&str>, stdin_tty: bool, stdout_tty: bool) -> bool {
+    prompt.is_none() && stdin_tty && stdout_tty
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wants_tui;
+
+    #[test]
+    fn tui_only_for_interactive_terminal_sessions() {
+        assert!(wants_tui(None, true, true));
+        assert!(!wants_tui(Some("问题"), true, true));
+        assert!(!wants_tui(None, false, true));
+        assert!(!wants_tui(None, true, false));
+    }
 }

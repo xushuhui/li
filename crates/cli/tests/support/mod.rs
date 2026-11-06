@@ -152,7 +152,7 @@ use serde_json::Value;
 /// Temp home plus a separate workspace directory, both under one tempdir.
 pub fn setup(port: u16) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("temp dir");
-    let config = dir.path().join(".config/baize");
+    let config = dir.path().join(".config/li");
     fs::create_dir_all(&config).expect("config dir");
     fs::write(
         config.join("config.toml"),
@@ -167,29 +167,29 @@ pub fn setup(port: u16) -> (tempfile::TempDir, PathBuf) {
 }
 
 pub fn run(home: &Path, cwd: &Path, prompt: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_baize"))
+    Command::new(env!("CARGO_BIN_EXE_li"))
         .arg(prompt)
         .current_dir(cwd)
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
-        .env_remove("BAIZE_API_KEY")
+        .env_remove("LI_API_KEY")
         .stdin(Stdio::null())
         .output()
-        .expect("run baize")
+        .expect("run li")
 }
 
 pub fn run_with_stdin(home: &Path, cwd: &Path, prompt: &str, input: &str) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_baize"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_li"))
         .arg(prompt)
         .current_dir(cwd)
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
-        .env_remove("BAIZE_API_KEY")
+        .env_remove("LI_API_KEY")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn baize");
+        .expect("spawn li");
     child
         .stdin
         .take()

@@ -4,6 +4,7 @@
 //! turns keystrokes into prompts.
 
 use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 
@@ -48,6 +49,11 @@ pub enum UiEvent {
     AssistantEnd,
     Tool(String),
     Status(String),
+    /// Refreshed numbers for the status bar; sent once per turn.
+    Bar {
+        used: u64,
+        changed: usize,
+    },
     AskApproval {
         command: String,
         reply: std_mpsc::Sender<bool>,
@@ -61,6 +67,10 @@ pub struct TuiUi {
 impl TuiUi {
     pub fn new(tx: mpsc::UnboundedSender<UiEvent>) -> Self {
         Self { tx }
+    }
+
+    pub fn bar(&self, used: u64, changed: usize) {
+        let _ = self.tx.send(UiEvent::Bar { used, changed });
     }
 }
 
@@ -129,6 +139,14 @@ struct App {
     status: String,
     pending: Option<(String, std_mpsc::Sender<bool>)>,
     skills: Vec<Skill>,
+    /// Startup facts for the status bar.
+    cwd: PathBuf,
+    branch: Option<String>,
+    model: String,
+    window: u32,
+    /// Refreshed after each turn.
+    used: u64,
+    changed: usize,
 }
 
 impl App {
@@ -181,7 +199,7 @@ impl App {
                 if text.is_empty() {
                     return false;
                 }
-                match slash::dispatch(&text, &self.skills) {
+                match slash::dispatch(&text, &self.skills, &self.cwd) {
                     Action::Exit => return true,
                     Action::Print(output) => {
                         for line in output.lines() {
@@ -241,10 +259,20 @@ async fn serve(
     } = launch;
 
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<String>();
+    let cwd = context.cwd.clone();
+    let agent_cwd = cwd.clone();
+    // Git lookups run once per turn, between turns, so blocking here is fine.
+    let branch = git_branch(&cwd);
+    let changed = git_changed(&cwd);
+    let used = latest_input_tokens(&session);
+    let window = budget.context_window;
+    let model_name = model.clone();
 
     let agent = tokio::spawn(async move {
         let mut session = session;
         while let Some(text) = input_rx.recv().await {
+            // Clear the previous turn's status line; the bar takes the row back.
+            ui.status("");
             let result = {
                 let settings = Settings {
                     system: &system,
@@ -257,6 +285,7 @@ async fn serve(
             if let Err(error) = result {
                 ui.status(&format!("出错：{error:#}"));
             }
+            ui.bar(latest_input_tokens(&session), git_changed(&agent_cwd));
         }
     });
 
@@ -281,6 +310,12 @@ async fn serve(
 
     let mut app = App {
         skills,
+        cwd,
+        branch,
+        model: model_name,
+        window,
+        used,
+        changed,
         ..App::default()
     };
     loop {
@@ -294,6 +329,10 @@ async fn serve(
                     UiEvent::AssistantEnd => app.assistant_end(),
                     UiEvent::Tool(line) => app.push(Kind::Tool, &line),
                     UiEvent::Status(line) => app.status = line,
+                    UiEvent::Bar { used, changed } => {
+                        app.used = used;
+                        app.changed = changed;
+                    }
                     UiEvent::AskApproval { command, reply } => {
                         app.pending = Some((command, reply));
                     }
@@ -317,7 +356,7 @@ async fn serve(
 fn draw(frame: &mut ratatui::Frame, app: &App) {
     let [body, input_area, bar] = Layout::vertical([
         Constraint::Min(3),
-        Constraint::Length(3),
+        Constraint::Length(1),
         Constraint::Length(1),
     ])
     .areas(frame.area());
@@ -352,19 +391,125 @@ fn draw(frame: &mut ratatui::Frame, app: &App) {
         .scroll((offset, 0));
     frame.render_widget(paragraph, body);
 
-    let input = Paragraph::new(app.input.as_str())
-        .block(Block::default().borders(Borders::ALL).title(" 输入 "));
-    frame.render_widget(input, input_area);
-    let cursor = input_area.x + 1 + app.input.chars().count() as u16;
-    frame.set_cursor_position((cursor.min(input_area.right().saturating_sub(2)), input_area.y + 1));
+    frame.render_widget(Paragraph::new(app.input.as_str()), input_area);
+    let cursor = input_area.x + app.input.chars().count() as u16;
+    frame.set_cursor_position((cursor.min(input_area.right().saturating_sub(1)), input_area.y));
 
     let completions = slash::completions(&app.input, &app.skills);
-    let bar_paragraph = match &app.pending {
-        Some((command, _)) => Paragraph::new(format!("确认执行？ {command}  [y/N]")),
-        None if !completions.is_empty() => Paragraph::new(hint_line(&completions)),
-        None => Paragraph::new(app.status.clone()),
+    let line = match &app.pending {
+        Some((command, _)) => Line::from(format!("确认执行？ {command}  [y/N]")),
+        None if !completions.is_empty() => hint_line(&completions),
+        None if !app.status.is_empty() => Line::from(app.status.clone()),
+        None => bar_line(app, bar.width),
     };
-    frame.render_widget(bar_paragraph, bar);
+    frame.render_widget(Paragraph::new(line), bar);
+}
+
+/// One row: where we are on the left, how much context is gone on the right.
+fn bar_line(app: &App, width: u16) -> Line<'static> {
+    let dim = Style::default().fg(Color::DarkGray);
+    let left = bar_left(app);
+    let mut right = bar_right(app, true);
+    if left.chars().count() + right.chars().count() + 1 > width as usize {
+        right = bar_right(app, false);
+    }
+    let used = left.chars().count() + right.chars().count();
+    let gap = (width as usize).saturating_sub(used).max(1);
+    Line::from(vec![
+        Span::styled(left, dim),
+        Span::raw(" ".repeat(gap)),
+        Span::styled(right, dim),
+    ])
+}
+
+fn bar_left(app: &App) -> String {
+    let mut left = shorten_home(&app.cwd);
+    if let Some(branch) = &app.branch {
+        left.push_str("  ");
+        left.push_str(branch);
+        if app.changed > 0 {
+            left.push_str(&format!(" *{}", app.changed));
+        }
+    }
+    left
+}
+
+fn bar_right(app: &App, with_model: bool) -> String {
+    let mut right = format!(
+        "{}%  {}",
+        percent(app.used, app.window),
+        human_window(app.window)
+    );
+    if with_model {
+        right.push_str("  ");
+        right.push_str(&app.model);
+    }
+    right
+}
+
+fn percent(used: u64, window: u32) -> u64 {
+    if window == 0 {
+        return 0;
+    }
+    used.saturating_mul(100) / u64::from(window)
+}
+
+fn human_window(window: u32) -> String {
+    if window >= 1_000_000 && window.is_multiple_of(1_000_000) {
+        format!("{}M", window / 1_000_000)
+    } else if window >= 1_000 && window.is_multiple_of(1_000) {
+        format!("{}K", window / 1_000)
+    } else {
+        window.to_string()
+    }
+}
+
+fn shorten_home(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && text.starts_with(&home) => {
+            format!("~{}", &text[home.len()..])
+        }
+        _ => text.into_owned(),
+    }
+}
+
+/// Input tokens of the newest request, which is the size of the live context.
+fn latest_input_tokens(session: &Session) -> u64 {
+    session
+        .messages()
+        .iter()
+        .rev()
+        .find_map(|message| message.usage.as_ref())
+        .map_or(0, |usage| usage.input)
+}
+
+fn git_branch(cwd: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
+fn git_changed(cwd: &Path) -> usize {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["status", "--porcelain"])
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).lines().count()
+        }
+        _ => 0,
+    }
 }
 
 /// Hint line: the first candidate is selected, so Tab fills it in.
@@ -461,6 +606,115 @@ mod tests {
         let quit = app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &tx);
         assert!(!quit);
         assert_eq!(app.input, "/help");
+    }
+
+    #[test]
+    fn bar_shows_branch_changes_and_context() {
+        let app = App {
+            cwd: PathBuf::from("/tmp/repo"),
+            branch: Some("master".to_string()),
+            model: "deepseek".to_string(),
+            window: 1_000_000,
+            used: 350_000,
+            changed: 3,
+            ..App::default()
+        };
+
+        let left = bar_left(&app);
+        assert!(left.ends_with("master *3"), "{left}");
+        let right = bar_right(&app, true);
+        assert!(right.starts_with("35%  1M"), "{right}");
+        assert!(right.ends_with("deepseek"), "{right}");
+    }
+
+    #[test]
+    fn bar_drops_the_model_when_the_row_is_too_narrow() {
+        let app = App {
+            cwd: PathBuf::from("/tmp/repo"),
+            model: "deepseek".to_string(),
+            window: 1_000_000,
+            ..App::default()
+        };
+
+        let line = bar_line(&app, 20);
+        let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(text.contains("0%  1M"), "{text}");
+        assert!(!text.contains("deepseek"), "{text}");
+        assert_eq!(text.chars().count(), 20, "{text}");
+    }
+
+    #[test]
+    fn idle_row_renders_the_bar() {
+        let app = App {
+            cwd: PathBuf::from("/tmp/repo"),
+            branch: Some("master".to_string()),
+            model: "m1".to_string(),
+            window: 200_000,
+            used: 50_000,
+            changed: 2,
+            ..App::default()
+        };
+
+        let screen = render(&app);
+        assert!(screen.contains("master*2"), "{screen}");
+        assert!(screen.contains("25%200K"), "{screen}");
+        assert!(screen.contains("m1"), "{screen}");
+    }
+
+    #[test]
+    fn status_line_replaces_the_bar() {
+        let app = App {
+            status: "出错：网络断开".to_string(),
+            model: "m1".to_string(),
+            window: 200_000,
+            ..App::default()
+        };
+
+        let screen = render(&app);
+        assert!(screen.contains("出错"), "{screen}");
+        assert!(!screen.contains("0%"), "{screen}");
+    }
+
+    #[test]
+    fn init_refusal_lands_in_the_transcript() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("AGENTS.md"), "# 已有").expect("agents file");
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut app = App {
+            cwd: dir.path().to_path_buf(),
+            input: "/init".to_string(),
+            ..App::default()
+        };
+
+        let quit = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &tx);
+        assert!(!quit);
+        assert!(app.input.is_empty());
+        assert!(
+            app.entries.iter().any(|entry| entry.text.contains("已存在")),
+            "{:?}",
+            app.entries.iter().map(|entry| &entry.text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn input_line_has_no_border_or_title() {
+        let app = App {
+            input: "hello".to_string(),
+            ..App::default()
+        };
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let row: String = buffer
+            .content()
+            .iter()
+            .skip(8 * 40)
+            .take(40)
+            .map(|cell| cell.symbol())
+            .collect();
+        assert_eq!(row, format!("hello{}", " ".repeat(35)));
     }
 
     #[test]

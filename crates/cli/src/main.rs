@@ -257,7 +257,7 @@ async fn repl(
         if text.is_empty() {
             continue;
         }
-        match slash::dispatch(text, skills) {
+        match slash::dispatch(text, skills, &context.cwd) {
             slash::Action::Exit => break,
             slash::Action::Print(output) => println!("{output}"),
             slash::Action::Send(message) => {
